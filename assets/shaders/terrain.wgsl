@@ -31,6 +31,13 @@ struct TerrainMaterial {
     offset: vec3<f32>,
     scale: f32,
     height: f32,
+    lacunarity: f32,
+    amplitude: f32,
+    angular_variance: vec2<f32>,
+    noise_rotation: f32,
+    octave_count: u32,
+    amplitude_decay: f32,
+    frequency_variance: vec2<f32>,
 }
 
 @group(2) @binding(100)
@@ -94,19 +101,19 @@ fn perlin_noise2D(pos: vec2<f32>) -> vec3<f32> {
 
     var remainder = fract(pos);
 
-			// Lattice Corners
+    // Lattice Corners
     var c00 = latticeMin;
     var c10 = vec2(latticeMax.x, latticeMin.y);
     var c01 = vec2(latticeMin.x, latticeMax.y);
     var c11 = latticeMax;
 
-			// Gradient Vectors assigned to each corner
+    // Gradient Vectors assigned to each corner
     var g00 = RandVector(HashPosition(c00));
     var g10 = RandVector(HashPosition(c10));
     var g01 = RandVector(HashPosition(c01));
     var g11 = RandVector(HashPosition(c11));
 
-			// Directions to position from lattice corners
+    // Directions to position from lattice corners
     var p0 = remainder;
     var p1 = p0 - vec2(1.0);
 
@@ -123,11 +130,90 @@ fn perlin_noise2D(pos: vec2<f32>) -> vec3<f32> {
     var c = dot(g01, p01);
     var d = dot(g11, p11);
 
-			// Expanded interpolation freaks of nature from https://iquilezles.org/articles/gradientnoise/
+    // Expanded interpolation freaks of nature from https://iquilezles.org/articles/gradientnoise/
     var noise = a + u.x * (b - a) + u.y * (c - a) + u.x * u.y * (a - b - c + d);
 
     var gradient = g00 + u.x * (g10 - g00) + u.y * (g01 - g00) + u.x * u.y * (g00 - g10 - g01 + g11) + du * (u.yx * (a - b - c + d) + vec2(b, c) - a);
     return vec3(noise, gradient);
+}
+
+// The fractional brownian motion that sums many noise values as explained in the video accompanying this project
+fn fbm(pos_: vec2<f32>) -> vec3<f32> {
+    var pos = pos_;
+    var lacunarity = terrain_material.lacunarity;
+    var amplitude = terrain_material.amplitude;
+
+    // height sum
+    var height = 0.0;
+
+    // derivative sum
+    var grad = vec2(0.0);
+
+    // accumulated rotations
+    var m = mat2x2<f32>(1.0, 0.0, 0.0, 1.0);
+
+			// generate random angle variance if applicable
+    var angle_variance = mix(terrain_material.angular_variance.x, terrain_material.angular_variance.y, HashPosition(vec2(terrain_material.seed, 827.0)));
+    var theta = (terrain_material.noise_rotation + angle_variance) * PI / 180.0;
+
+			// rotation matrix
+    var m2 = mat2x2<f32>(cos(theta), -sin(theta), sin(theta), cos(theta));
+
+    var m2i = inverse_mat2x2(m2);
+
+    for (var i: u32 = u32(0); i < terrain_material.octave_count; i++) {
+        var n = perlin_noise2D(pos);
+				
+				// add height scaled by current amplitude
+        height += amplitude * n.x;	
+				
+				// add gradient scaled by amplitude and transformed by accumulated rotations
+        grad += amplitude * m * n.yz;
+				
+				// apply amplitude decay to reduce impact of next noise layer
+        amplitude *= terrain_material.amplitude_decay;
+				
+				// generate random angle variance if applicable
+        angle_variance = mix(terrain_material.angular_variance.x, terrain_material.angular_variance.y, HashPosition(vec2(f32(i) * 419.0, terrain_material.seed)));
+        theta = (terrain_material.noise_rotation + angle_variance) * PI / 180.0;
+
+				// reconstruct rotation matrix, kind of a performance stink since this is technically expensive and doesn't need to be done if no random angle variance but whatever it's 2025
+        m2 = mat2x2(cos(theta), -sin(theta),
+            sin(theta), cos(theta));
+
+        m2i = inverse_mat2x2(m2);
+
+				// generate frequency variance if applicable
+        var freq_variance = mix(terrain_material.frequency_variance.x, terrain_material.frequency_variance.y, HashPosition(vec2(f32(i) * 422.0, terrain_material.seed)));
+
+				// apply frequency adjustment to sample position for next noise layer
+        pos = (lacunarity + freq_variance) * m2 * pos;
+        m = (lacunarity + freq_variance) * m2i * m;
+    }
+
+    return vec3(height, grad);
+}
+
+
+fn inverse_mat2x2(matrix: mat2x2<f32>) -> mat2x2<f32> {
+    let a = matrix[0].x;
+    let b = matrix[0].y;
+    let c = matrix[1].x;
+    let d = matrix[1].y;
+
+    let determinant = a * d - b * c;
+
+    if determinant == 0.0 {
+        // Handle singular matrix (no inverse)
+        return mat2x2(0.0, 0.0, 0.0, 0.0); // Or return some other error indicator
+    }
+
+    let inv_determinant = 1.0 / determinant;
+
+    return mat2x2(
+        d * inv_determinant, -b * inv_determinant,
+        -c * inv_determinant, a * inv_determinant
+    );
 }
 
 
@@ -144,7 +230,7 @@ fn vertex_simple(vertex: Vertex) -> VertexOutput {
 }
 
 
-@vertex
+  @vertex
 fn vertex(vertex: Vertex) -> VertexOutput {
 
 
@@ -162,7 +248,7 @@ fn vertex(vertex: Vertex) -> VertexOutput {
     var pos: vec3<f32> = vertex.position.xyz;
     //var noise_pos = (pos + terrain_material.offset);
     var noise_pos = (pos + terrain_material.offset) / terrain_material.scale;
-    var n = perlin_noise2D(noise_pos.xz);
+    var n = fbm(noise_pos.xz);
     //var n = HashPosition(noise_pos.xy);
 
     pos.y += (n.x * terrain_material.height + terrain_material.height - terrain_material.offset.y) / terrain_material.scale;
@@ -218,7 +304,7 @@ fn fragment(in: VertexOutput,
     // generate a PbrInput struct from the StandardMaterial bindings
     var pbr_input = pbr_input_from_standard_material(in, is_front);
 
-    var pos: vec3<f32> = in.position.xyz;
+    var pos: vec3<f32> = in.world_position.xyz;
 
     //var n = perlin_noise2D(pos.xz);
 

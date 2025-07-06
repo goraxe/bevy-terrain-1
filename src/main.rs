@@ -209,6 +209,20 @@ struct TerrainMaterial {
     scale: f32,
     #[uniform(100)]
     height: f32,
+    #[uniform(100)]
+    lacunarity: f32,
+    #[uniform(100)]
+    amplitude: f32,
+    #[uniform(100)]
+    angular_variance: Vec2,
+    #[uniform(100)]
+    noise_rotation: f32,
+    #[uniform(100)]
+    octave_count: u32,
+    #[uniform(100)]
+    amplitude_decay: f32,
+    #[uniform(100)]
+    frequency_variance: Vec2,
 }
 
 const TERRAIN_SHADER_ASSET_PATH: &str = "shaders/terrain.wgsl";
