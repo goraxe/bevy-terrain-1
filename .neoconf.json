@@ -1,0 +1,19 @@
+{
+  "neoconf": {
+    "plugins": {
+      "jsonls": {
+        "configured_servers_only": false
+      }
+    }
+  },
+  "lspconfig": {
+    "wgls_analyzer": {
+      "wgsl-analyzer.customImports": {
+        "bevy_pbr::mesh_bindings": "https://raw.githubusercontent.com/bevyengine/bevy/refs/tags/v0.16.1/crates/bevy_pbr/src/render/mesh_bindings.wgsl",
+        "bevy_pbr::mesh_functions": "https://raw.githubusercontent.com/bevyengine/bevy/refs/tags/v0.16.1/crates/bevy_pbr/src/render/mesh_functions.wgsl",
+        "bevy_pbr::forward_io": "https://raw.githubusercontent.com/bevyengine/bevy/refs/tags/v0.16.1/crates/bevy_pbr/src/render/forward_io.wgsl"
+      },
+      "wgsl-analyzer.diagnostics.nagaVersion": "main"
+    }
+  }
+}
