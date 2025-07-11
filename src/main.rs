@@ -11,7 +11,7 @@ use bevy::{
     render::{
         RenderPlugin,
         mesh::{Indices, MeshAabb, PrimitiveTopology},
-        render_resource::{AsBindGroup, ShaderRef},
+        render_resource::{AsBindGroup, PolygonMode, ShaderRef, ShaderType},
         settings::{RenderCreation, WgpuFeatures, WgpuSettings},
     },
     window::PrimaryWindow,
@@ -19,7 +19,7 @@ use bevy::{
 use bevy_inspector_egui::{
     DefaultInspectorConfigPlugin,
     bevy_egui::{EguiContextSettings, EguiPlugin},
-    quick::{AssetInspectorPlugin, WorldInspectorPlugin},
+    quick::{AssetInspectorPlugin, FilterQueryInspectorPlugin, WorldInspectorPlugin},
 };
 use bevy_panorbit_camera::{EguiFocusIncludesHover, PanOrbitCamera, PanOrbitCameraPlugin};
 
@@ -27,6 +27,7 @@ fn main() {
     App::new()
         .register_type::<PanOrbitCamera>()
         .register_asset_reflect::<ExtendedMaterial<StandardMaterial, TerrainMaterial>>()
+        .register_asset_reflect::<ExtendedMaterial<StandardMaterial, TerrainWireFrameMaterial>>()
         .add_plugins((
             DefaultPlugins.set(RenderPlugin {
                 render_creation: RenderCreation::Automatic(WgpuSettings {
@@ -42,18 +43,22 @@ fn main() {
         .add_plugins(MaterialPlugin::<
             ExtendedMaterial<StandardMaterial, TerrainMaterial>,
         >::default())
+        .add_plugins(MaterialPlugin::<
+            ExtendedMaterial<StandardMaterial, TerrainWireFrameMaterial>,
+        >::default())
         .add_plugins(EguiPlugin {
             enable_multipass_for_primary_context: true,
         })
         .add_plugins(DefaultInspectorConfigPlugin)
         .add_plugins(WorldInspectorPlugin::new())
-        .add_plugins(AssetInspectorPlugin::<
-            ExtendedMaterial<StandardMaterial, TerrainMaterial>,
-        >::default())
+        .add_plugins(FilterQueryInspectorPlugin::<With<TerrainMaterialSettings>>::default())
         .add_plugins(PanOrbitCameraPlugin)
         .add_systems(Startup, update_ui_scale_factor)
         .add_systems(Startup, setup)
-        .add_systems(Update, input_handler)
+        .add_systems(
+            Update,
+            (input_handler, update_changed_terrain_material_settings),
+        )
         .insert_resource(EguiFocusIncludesHover(true))
         .run();
 }
@@ -77,10 +82,13 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut terrain_materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, TerrainMaterial>>>,
+    mut wireframe_materials: ResMut<
+        Assets<ExtendedMaterial<StandardMaterial, TerrainWireFrameMaterial>>,
+    >,
 ) {
     let mut pos = Vec::new();
-    let side_length: i16 = 10;
-    let mesh_scale = 2.0;
+    let side_length: i16 = 50;
+    let mesh_scale = 1.0;
 
     let half_length = (f32::from(side_length) - 1.0) / 2.0;
 
@@ -131,22 +139,51 @@ fn setup(
 
     mesh.compute_aabb();
 
+    let mesh_handle = meshes.add(mesh);
     commands.spawn((
         Name::new("Terrain"),
-        Wireframe,
-        Mesh3d(meshes.add(mesh)),
+        TerrainMaterialSettings {
+            seed: 0f32,
+            gradient_rotation: 0f32,
+            scale: 5f32,
+            ..Default::default()
+        },
+        Mesh3d(mesh_handle.clone()),
+        children![(
+            Mesh3d(mesh_handle),
+            MeshMaterial3d(wireframe_materials.add(ExtendedMaterial {
+                base: StandardMaterial {
+                    base_color: POWDER_BLUE.into(),
+                    ..Default::default()
+                },
+                extension: TerrainWireFrameMaterial {
+                    settings: TerrainMaterialSettings {
+                        seed: 0f32,
+                        gradient_rotation: 0f32,
+                        scale: 5f32,
+                        ..Default::default()
+                    }
+                },
+            })),
+        )],
         MeshMaterial3d(terrain_materials.add(ExtendedMaterial {
             base: StandardMaterial {
                 base_color: POWDER_BLUE.into(),
                 ..Default::default()
             },
             extension: TerrainMaterial {
-                seed: 0f32,
-                gradient_rotation: 0f32,
-                scale: 500f32,
-                ..Default::default()
+                settings: TerrainMaterialSettings {
+                    seed: 0f32,
+                    gradient_rotation: 0f32,
+                    scale: 5f32,
+                    ..Default::default()
+                },
             },
         })),
+        /*
+        Wireframe,
+
+        */
     ));
 
     commands.spawn((
@@ -177,8 +214,8 @@ fn setup(
             yaw_lower_limit: Some(-TAU / 4.0),
             pitch_upper_limit: Some(TAU / 3.0),
             pitch_lower_limit: Some(-TAU / 3.0),
-            zoom_upper_limit: Some(20.0),
-            zoom_lower_limit: 1.0,
+            //          zoom_upper_limit: Some(20.0),
+            zoom_lower_limit: 5.0,
 
             // Change the controls (these match Blender)
             //button_orbit: MouseButton::Middle,
@@ -197,35 +234,73 @@ fn setup(
     ));
 }
 
-#[derive(Asset, Reflect, AsBindGroup, Clone, Default)]
-struct TerrainMaterial {
-    #[uniform(100)]
+fn update_changed_terrain_material_settings(
+    terrain_settings: Query<
+        (
+            &MeshMaterial3d<ExtendedMaterial<StandardMaterial, TerrainMaterial>>,
+            &Children,
+            &TerrainMaterialSettings,
+        ),
+        Changed<TerrainMaterialSettings>,
+    >,
+    wireframe_settings: Query<
+        (&MeshMaterial3d<ExtendedMaterial<StandardMaterial, TerrainWireFrameMaterial>>),
+        With<ChildOf>,
+    >,
+
+    mut terrain_materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, TerrainMaterial>>>,
+    mut wireframe_materials: ResMut<
+        Assets<ExtendedMaterial<StandardMaterial, TerrainWireFrameMaterial>>,
+    >,
+) {
+    for (mat_handle, children, settings) in terrain_settings {
+        let Some(mut mat) = terrain_materials.get_mut(mat_handle) else {
+            continue;
+        };
+        mat.extension.settings = settings.clone();
+
+        for child in children {
+            if let Ok(mut mat_handle) = wireframe_settings.get(*child) {
+                if let Some(mut mat) = wireframe_materials.get_mut(mat_handle) {
+                    mat.extension.settings = settings.clone();
+                }
+            }
+        }
+    }
+}
+
+#[derive(Component, Reflect, Clone, Default, ShaderType)]
+struct TerrainMaterialSettings {
     seed: f32,
-    #[uniform(100)]
     gradient_rotation: f32,
-    #[uniform(100)]
     offset: Vec3,
-    #[uniform(100)]
     scale: f32,
-    #[uniform(100)]
     height: f32,
-    #[uniform(100)]
     lacunarity: f32,
-    #[uniform(100)]
     amplitude: f32,
-    #[uniform(100)]
     angular_variance: Vec2,
-    #[uniform(100)]
     noise_rotation: f32,
-    #[uniform(100)]
     octave_count: u32,
-    #[uniform(100)]
     amplitude_decay: f32,
-    #[uniform(100)]
     frequency_variance: Vec2,
 }
 
+#[derive(Asset, Reflect, AsBindGroup, Clone, Default)]
+struct TerrainMaterial {
+    #[uniform(100)]
+    settings: TerrainMaterialSettings,
+}
+
+#[derive(Asset, Reflect, AsBindGroup, Clone, Default)]
+struct TerrainWireFrameMaterial {
+    #[uniform(100)]
+    settings: TerrainMaterialSettings,
+}
+
+// fn update_changed_terrain_material_settings(settings: Changed )
+
 const TERRAIN_SHADER_ASSET_PATH: &str = "shaders/terrain.wgsl";
+const TERRAIN_WIREFRAME_SHADER_ASSET_PATH: &str = "shaders/terrain_wireframe.wgsl";
 
 impl MaterialExtension for TerrainMaterial {
     fn vertex_shader() -> ShaderRef {
@@ -234,5 +309,26 @@ impl MaterialExtension for TerrainMaterial {
 
     fn fragment_shader() -> ShaderRef {
         TERRAIN_SHADER_ASSET_PATH.into()
+    }
+}
+
+impl MaterialExtension for TerrainWireFrameMaterial {
+    fn vertex_shader() -> ShaderRef {
+        TERRAIN_SHADER_ASSET_PATH.into()
+    }
+
+    fn fragment_shader() -> ShaderRef {
+        TERRAIN_WIREFRAME_SHADER_ASSET_PATH.into()
+    }
+
+    fn specialize(
+        pipeline: &bevy::pbr::MaterialExtensionPipeline,
+        descriptor: &mut bevy::render::render_resource::RenderPipelineDescriptor,
+        layout: &bevy::render::mesh::MeshVertexBufferLayoutRef,
+        key: bevy::pbr::MaterialExtensionKey<Self>,
+    ) -> std::result::Result<(), bevy::render::render_resource::SpecializedMeshPipelineError> {
+        descriptor.primitive.polygon_mode = PolygonMode::Line;
+
+        return Ok(());
     }
 }
